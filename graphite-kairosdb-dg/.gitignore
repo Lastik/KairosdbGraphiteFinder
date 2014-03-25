@@ -1,0 +1,4 @@
+kairosdb.egg-info
+*.pyc
+dist
+build
