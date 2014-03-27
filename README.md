@@ -9,8 +9,6 @@ Requires  Graphite-web 0.10.X.
 Graphite-web 0.10.X is currently unreleased. You'll need to install from
 source.
 
-.. _documentation: http://graphite-api.readthedocs.org/en/latest/
-
 Using with graphite-web
 -----------------------
 
