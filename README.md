@@ -20,6 +20,6 @@ In your graphite's ``local_settings.py``::
 
     KAIROSDB_URL = 'http://host:port'
 
-Where ``host:port`` is the location of the Kiaorsdb HTTP API, 
+Where ``host:port`` is the location of the Kairosdb HTTP API, 
 
 e.g. http://localhost:8080/api/v1
