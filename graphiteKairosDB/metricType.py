@@ -43,20 +43,11 @@ class MetricType(object):
     def __del__(self):
         self.closeConnection()
 
-    def addDocToCache(self, name, val):
-        self._cache[name] = val
-        if self.cache_max:
-            while len(self._cache) > self.cache_max:
-                self._cache.popitem()
-
-    def invalidateCache(self, name):
-        self._cache[name] = None
-                
     def closeConnection(self):
         if self.session:
             self.log.debug("metricType.closeConnection(): trying to close conection...")
             try:
-                self.session.close()
+                self.session.shutdown()
             except Exception as e:
                 self.log.info("metricType.closeConnection(): Exception, e: %s." % (str(e)))
                 # disconnected now
@@ -70,7 +61,7 @@ class MetricType(object):
             self.session = session
             self.log.info("MetricType object using passed-in connection object.")
         else:
-            cluster = Cluster(['10.235.67.65'])
+            cluster = Cluster(['xxxxxxxxxip_addresses___go_Here______', 'as_a_list'])
             self.session = cluster.connect()  # aka session 
             self.log.info("Instantiated new connection for metricType: %s" % (self.session))
             keyspace = 'metricnamecache'
@@ -80,16 +71,51 @@ class MetricType(object):
         self.log.info("metricType.openConnection(): Connection established, have session.")
         return
 
+    def addDocToCache(self, name, val):
+        self._cache[name] = val
+        if self.cache_max:
+            while len(self._cache) > self.cache_max:
+                self._cache.popitem()
+
+    def invalidateCache(self, name):
+        self._cache[name] = None
+
+    def getCacheSize(self):
+        return len(self._cache)  # dict method has len(), faster than len(self._cache.keys()) since no iteration.
+        
+    def prepopulateCache(self):
+        self.log.info("prepopulateCache(): Getting all recs from metric type table...")
+        allRecs = self.getAllMetricTypeRecords()
+        # DO NOT CALL LEN() ON allRecs.  IT'S A GENERATOR FUNCTION AND WILL ERROR OUT ON LEN().
+        self.log.info("prepopulateCache(): Ok.  Retrieved recs from metric type table.")
+        counter     = 0
+        for row in allRecs:
+            name = row.get('metricname', None)
+            if not name:
+                self.log.warning("Row found with no metricname: %s" % (pformat(row)))
+                continue
+            self.addDocToCache(name, row)
+            counter += 1
+            if counter % (100 * 1000) == 0:
+                self.log.info("Loaded %s k recs into cache...." % (counter/1000))
+        return
+
     def getAllMetricTypeRecords(self):
         self.log.debug("Querying metrictype for all metric names:  START:" )
         q = '''select * from metrictype'''
         rows = self.session.execute(q)
         counter = 0
+        allRows = []
         for r in rows:
             #self.log.debug("Row: %s" % (pformat(r)))
+            allRows.append(r)
             counter += 1
-            self.log.info("Row #%9.9d: %s" % (counter, r))
+            if counter % (100 * 1000) == 0:
+                self.log.info("... loaded %d k records" % (int(counter/1000)))
+            #self.log.debug("Row #%9.9d: %s" % (counter, r))
         self.log.debug("Querying metrictype for all metric names,  END." )
+        self.log.info("getAllMetricTypeRecords(): found %d records." % (counter))
+        return allRows
    
     def getMetricTypeRec(self, metricname):
         rows = self.session.execute('select * from metrictype where metricname = %s', [metricname])
@@ -103,7 +129,7 @@ class MetricType(object):
             return None
         doc = self._cache.get(metricname)
         if doc:
-            self.log.info("getByName: %s found name in cache, returning %s." % (metricname, self.strMtDoc(doc)))
+            self.log.debug("getByName: %s found name in cache, returning %s." % (metricname, self.strMtDoc(doc)))
             return doc
         self.log.debug("metricType.getByName(): Missed cache, querying, metricname=%s" % (metricname))
         doc = self.getMetricTypeRec(metricname)
@@ -397,6 +423,9 @@ class MetricType(object):
         # return array of [ (mtrec1, 'B'), (mtrec2, 'B'), ...]   for branches or 'L' for leaves.
         if not queryPattern:
             return []
+        cached = self.getQpFromCache(queryPattern)
+        if cached:
+            return cached
         # 4 basic cases: 1: top level, 2: a.b.* navigating tree, 3: a.b.c exact, 4: everything else.
         mnames = self.find_mnames(queryPattern)
         #self.log.info("find_nodes(): have mnames: %s" % (mnames))
@@ -412,6 +441,7 @@ class MetricType(object):
             else:
                 node = (mn, 'L')
             ret.append(node)
+        self.addQpToCache(queryPattern, ret)
         return ret
 
     def nowTime(self):
@@ -574,17 +604,19 @@ class MetricType(object):
         try:
             mname   = mtrec.get('metricname')
             curList = mtrec.get('children', [])
+            if curList is None:
+                curList = []
             curSet  = set(curList)
             parentname = self.getParentMetricName(mname)
             if not parentname:
                 parentname = 'root'
             docs    = self.getByParentName(mname)
-            self.log.info("fixChildren(): Name: %s found recs with parent name %s of %s" % (mname, parentname, docs))
+            self.log.debug("fixChildren(): Name: %s found recs with parent name %s of %s" % (mname, parentname, docs))
             childNamesSet = set()
             for d in docs: 
                 name = d.get('metricname')
                 childNamesSet.add(name)
-            self.log.info("fixChildren(): Name: %s, children current: %s, shouldbe: %s" % (mname, curSet, childNamesSet)) 
+            self.log.debug("fixChildren(): Name: %s, children current: %s, shouldbe: %s" % (mname, curSet, childNamesSet)) 
             if (curSet != childNamesSet):
                 self.setChildrenForMetricName(mname, childNamesSet)
                 self.invalidateCache(mname)   # important
@@ -640,7 +672,7 @@ class MetricType(object):
             newDoc['children'           ] = []
             newDoc['linktometricname'   ] = None
             newDoc['expiry'             ] = None
-            self.log.info("CreateMetricTypeDoc(): doc created: %s" % (newDoc))
+            self.log.debug("CreateMetricTypeDoc(): doc created: %s" % (newDoc))
             self.insertMetricTypeDocument(newDoc)
             self.log.info("CreateMetricTypeDoc(): inserted doc w/ name: %s" % (metricname))
             self.addDocToCache(metricname, newDoc)
@@ -653,9 +685,9 @@ class MetricType(object):
 
     def insertMetricTypeDocument(self, doc):
         query = '''INSERT INTO metrictype (metricname, parentname) VALUES (%(metricname)s, %(parentname)s )'''
-        self.log.info("insertMetricTypeDocument(): query: %s, doc: %s" % (query, doc))
+        self.log.debug("insertMetricTypeDocument(): query: %s, doc: %s" % (query, doc))
         retval = self.session.execute(query, doc)
-        self.log.info("retval: %s" % (retval))
+        self.log.debug("retval: %s" % (retval))
 
     def deleteMetricTypeDocuments(self, mnames):
         query = '''DELETE FROM metrictype WHERE metricname IN %s'''        
